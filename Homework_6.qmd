@@ -1,0 +1,281 @@
+---
+title: "Homework 6"
+format: pdf
+---
+
+```{r}
+library(cmdstanr)
+```
+
+2\.
+
+```{r}
+# a
+log_lik = function(y, pi, lambda) {
+  sum(ifelse(y == 0,
+             log(pi + (1 - pi) * exp(-lambda)),
+             log(1 - pi) - lambda + y * log(lambda) - lfactorial(y)))
+}
+
+log_prior_pi = function(pi, alpha, beta) {
+    dbeta(pi, alpha, beta, log = TRUE)
+}
+
+log_prior_lambda = function(lambda, kappa, theta) {
+    dgamma(lambda, kappa, theta, log = TRUE)
+}
+
+log_fc_pi = function(y, pi, lambda, alpha, beta) {
+    log_lik(y, pi, lambda) + log_prior_pi(pi, alpha, beta)
+}
+
+log_fc_lambda = function(y, pi, lambda, kappa, theta) {
+    log_lik(y, pi, lambda) + log_prior_lambda(lambda, kappa, theta)
+}
+
+update_pi = function(y, pi, lambda, alpha, beta) {
+    sigma = 0.2
+    pi_star = rnorm(1, pi, sigma)
+    if (pi_star <= 0 || pi_star >= 1) {
+        return(list(pi = pi, accept = 0))
+    }
+    r = log_fc_pi(y, pi_star, lambda, alpha, beta) - log_fc_pi(y, pi, lambda, alpha, beta)
+    if (log(runif(1)) < r) {
+        return(list(pi = pi_star, accept = 1))
+    }
+    else {
+        return(list(pi = pi, accept = 0))
+    }
+}
+
+update_lambda = function(y, pi, lambda, kappa, theta) {
+    sigma = 0.4
+    lambda_star = rnorm(1, lambda, sigma)
+    if (lambda_star <= 0) {
+        return(list(lambda = lambda, accept = 0))
+    }
+    r = log_fc_lambda(y, pi, lambda_star, kappa, theta) - log_fc_lambda(y, pi, lambda, kappa, theta)
+    if (log(runif(1)) < r) {
+        return(list(lambda = lambda_star, accept = 1))
+    }
+    else {
+        return(list(lambda = lambda, accept = 0))
+    }
+}
+
+gibbs = function(y, pi, lambda, alpha, beta, kappa, theta, n_iter) {
+    results = matrix(NA, n_iter, 2)
+    n_accept_pi = 0
+    n_accept_lambda = 0
+    for (i in 1:n_iter) {
+        out = update_pi(y, pi, lambda, alpha, beta)
+        pi = out$pi
+        n_accept_pi = n_accept_pi + out$accept
+        out = update_lambda(y, pi, lambda, kappa, theta)
+        lambda = out$lambda
+        n_accept_lambda = n_accept_lambda + out$accept
+        results[i,] = c(pi, lambda)
+    }
+    list(results = results, n_accept_pi = n_accept_pi, n_accept_lambda = n_accept_lambda)
+}
+
+y = c(rep(0, 25), rep(1, 6), rep(2, 4), rep(3, 3), 5)
+out = gibbs(y, pi = 0.5, lambda = 1, alpha = 1, beta = 1, kappa = 2, theta = 1, n_iter = 10000)
+results = out$results
+plot(results[,1], type = "l", ylab = expression(pi))
+plot(results[,2], type = "l", ylab = expression(lambda))
+coda::effectiveSize(results)
+out$n_accept_pi / 10000
+out$n_accept_lambda / 10000
+```
+
+```{r}
+# b
+log_post = function(y, pi, lambda, alpha, beta, kappa, theta) {
+    log_lik(y, pi, lambda) + log_prior_pi(pi, alpha, beta) + log_prior_lambda(lambda, kappa, theta)
+}
+
+update_both = function(y, pi, lambda, alpha, beta, kappa, theta) {
+    Sigma = matrix(c(0.04, 0, 0, 0.04), 2, 2)   
+    current = c(pi, lambda)
+    proposal = MASS::mvrnorm(1, current, Sigma)
+    pi_star = proposal[1]
+    lambda_star = proposal[2]
+    if (pi_star <= 0 || pi_star >= 1 || lambda_star <= 0) {
+        return(list(params = current, accept = 0))
+    }
+    r = log_post(y, pi_star, lambda_star, alpha, beta, kappa, theta) -
+    log_post(y, pi, lambda, alpha, beta, kappa, theta)
+    if (log(runif(1)) < r) {
+        return(list(params = proposal, accept = 0))
+    } else {
+        return(list(params = current, accept = 0))
+    }
+}
+
+gibbs = function(y, pi, lambda, alpha, beta, kappa, theta, n_iter) {
+    results = matrix(NA, n_iter, 2)
+    for (i in 1:n_iter) {
+        params = update_both(y, pi, lambda, alpha, beta, kappa, theta)
+        pi = params[1]
+        lambda = params[2]
+        results[i,] = params
+    }
+    results
+}
+
+results = gibbs(y, pi = 0.5, lambda = 1, alpha = 1, beta = 1, kappa = 2, theta = 1, n_iter = 10000)
+plot(results[,1], type = "l", ylab = expression(pi))
+plot(results[,2], type = "l", ylab = expression(lambda))
+```
+
+```{r}
+# c
+update_pi = function(z, alpha, beta) {
+    n = length(z)
+    rbeta(1, alpha + sum(z), beta + n - sum(z))
+}
+
+update_lambda = function(y, z, kappa, theta) {
+    n = length(z)
+    rgamma(1, kappa + sum(y[z == 0]), rate = theta + n - sum(z))
+}
+
+update_z = function(y, pi, lambda) {
+    n = length(y)
+    w1 = pi * (y == 0)
+    w2 = dpois(y, lambda) * (1 - pi)
+    rbinom(n, 1, w1 / (w1 + w2))
+}
+
+gibbs = function(y, pi, lambda, alpha, beta, kappa, theta, n_iter) {
+    results = matrix(NA, n_iter, 2)
+    for (i in 1:n_iter) {
+        z = update_z(y, pi, lambda)
+        pi = update_pi(z, alpha, beta)
+        lambda = update_lambda(y, z, kappa, theta)
+        results[i,] = c(pi, lambda)
+    }
+    results
+}
+
+results = gibbs(y, pi = 0.5, lambda = 1, alpha = 1, beta = 1, kappa = 2, theta = 1, n_iter = 10000)
+plot(results[,1], type = "l", ylab = expression(pi))
+plot(results[,2], type = "l", ylab = expression(lambda))
+```
+
+3\.
+
+```{r}
+# a
+log_lik = function(y, mu, sig2) {
+    sum(dnorm(y, mu, sqrt(sig2), log = TRUE))
+}
+
+log_prior_sig2 = function(sig2, s0) {
+    # dcauchy(sqrt(sig2), 0, s0, log = TRUE) + log(2)
+    log(2) - log(pi) - log(s0) - log(1 + sig2 / s0^2)
+}
+
+log_fc_sig2 = function(y, mu, sig2, s0) {
+    log_lik(y, mu, sig2) + log_prior_sig2(sig2, s0)
+}
+
+update_mu = function(y, sig2, m0, v0) {
+    ybar = mean(y)
+    n = length(y)
+    v1 = 1 / (1 / v0 + n / sig2)
+    m1 = v1 * (1 / v0 * m0 + n / sig2 * ybar)
+    rnorm(1, m1, sqrt(v1))
+}
+
+update_sig2 = function(y, mu, sig2, s0) {
+    sigma = 1
+    sig2_star = rnorm(1, sig2, sigma)
+    if (sig2_star <= 0) {
+        return(sig2)
+    }
+    r = log_fc_sig2(y, mu, sig2_star, s0) - log_fc_sig2(y, mu, sig2, s0)
+    if (log(runif(1)) < r) {
+        return(sig2_star)
+    }
+    else {
+        return(sig2)
+    }
+}
+
+gibbs = function(y, mu, sig2, m0, v0, s0, n_iter) {
+    results = matrix(NA, n_iter, 2)
+    for (i in 1:n_iter) {
+        mu = update_mu(y, sig2, m0, v0)
+        sig2 = update_sig2(y, mu, sig2, s0)
+        results[i,] = c(mu, sig2)
+    }
+    results
+}
+
+y = read.table("stat-exam.dat")$V1 |> as.vector()
+results = gibbs(y, mu = 85, sig2 = 25, m0 = 85, v0 = 25, s0 = 5, n_iter = 10000)
+```
+
+```{r}
+
+n_iter = 100000
+results = matrix(NA, nrow = n_iter, ncol = 2)
+mu = 85
+sig2 = 25
+m0 = 85
+v0 = 25
+s0 = 5 # what does this mean
+for (i in 1:n_iter) {
+    mu = update_mu(y, sig2, m0, v0)
+    sig2 = update_sig2(y, mu, sig2, s0)
+    results[i,] = c(mu, sig2)
+}
+```
+
+3.  b\.
+
+```{r}
+rinvgamma = function(n, shape, scale) {
+    1.0 / rgamma(n, shape = shape, rate = scale)
+}
+
+update_mu = function(y, sig2, m0, v0) {
+    ybar = mean(y)
+    n = length(y)
+    v1 = 1 / (1 / v0 + n / sig2)
+    m1 = v1 * (1 / v0 * m0 + n / sig2 * ybar)
+    rnorm(1, m1, sqrt(v1))
+}
+
+update_sig2 = function(y, mu, eta) {
+    n = length(y)
+    rinvgamma(1, (n + 1) / 2, sum(y - mu)^2 / 2 + 1 / eta)
+}
+
+update_eta = function(sig2, s0) {
+    rinvgamma(1, 1, 1 / sig2 + 1 / s0^2)
+}
+```
+
+3.  c\.
+
+```{r}
+N = length(y)
+m0 = 85
+v0 = 25
+s0 = 5 # what does this mean
+stan_data = list(
+    N = N,
+    y = y,
+    m0 = m0,
+    v0 = v0,
+    s0 = s0
+)
+stan_model = cmdstan_model("exams.stan")
+fit = stan_model$sample(
+    data = stan_data,
+    seed = 42
+)
+```
